@@ -587,7 +587,6 @@ func validateWritableWorkspace(t *testing.T, ctx context.Context, clients *clien
 
 	podSpec := corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      imageName,
 			Namespace: testNamespace,
 		},
 		Spec: corev1.PodSpec{
