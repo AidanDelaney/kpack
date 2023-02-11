@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"strings"
@@ -314,6 +315,13 @@ func testCreateImage(t *testing.T, when spec.G, it spec.S) {
 					Revision: "master",
 				},
 			},
+			"test-git-image-subpath": {
+				Git: &corev1alpha1.Git{
+					URL:      "https://github.com/buildpacks/samples",
+					Revision: "main",
+				},
+				SubPath: "apps/bash-script",
+			},
 			"test-blob-image": {
 				Blob: &corev1alpha1.Blob{
 					URL: "https://storage.googleapis.com/build-service/sample-apps/spring-petclinic-2.1.0.BUILD-SNAPSHOT.jar",
@@ -372,6 +380,7 @@ func testCreateImage(t *testing.T, when spec.G, it spec.S) {
 
 					validateImageCreate(t, clients, image, expectedResources)
 					validateRebase(t, ctx, clients, image.Name, testNamespace)
+					validateWritableWorkspace(t, ctx, clients, image.Name, testNamespace)
 				})
 			}
 		}
@@ -564,6 +573,49 @@ func validateRebase(t *testing.T, ctx context.Context, clients *clients, imageNa
 
 		return build.Status.GetCondition(corev1alpha1.ConditionSucceeded).IsTrue()
 	}, 5*time.Second, 1*time.Minute)
+}
+
+func validateWritableWorkspace(t *testing.T, ctx context.Context, clients *clients, imageName, testNamespace string) {
+	buildList, err := clients.client.KpackV1alpha2().Builds(testNamespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("image.kpack.io/image=%s", imageName),
+	})
+	require.NoError(t, err)
+
+	require.Len(t, buildList.Items, 1)
+	build := buildList.Items[0]
+	image := build.BuiltImage()
+
+	podSpec := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      imageName,
+			Namespace: testNamespace,
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:    fmt.Sprintf("%s-container", imageName),
+					Image:   image,
+					Command: []string{"ls -l / | grep workspace"},
+				},
+			},
+		},
+	}
+	pod, err := clients.k8sClient.CoreV1().Pods(testNamespace).Create(ctx, &podSpec, metav1.CreateOptions{})
+	require.NoError(t, err)
+	req := clients.k8sClient.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{})
+	podLogs, err := req.Stream(ctx)
+	require.NoError(t, err)
+	defer podLogs.Close()
+
+	// Assert contains string drwxrwxrwx
+	eventually(t,
+		func() bool {
+			buf := new(bytes.Buffer)
+			_, err = io.Copy(buf, podLogs)
+			require.NoError(t, err)
+			str := buf.String()
+			return strings.Contains(str, "drwxrwxrwx")
+		}, 5*time.Second, 1*time.Minute)
 }
 
 func deleteImageTag(t *testing.T, deleteImageTag string) {
